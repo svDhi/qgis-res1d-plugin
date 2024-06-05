@@ -123,7 +123,9 @@ class Res1dLoader(QObject):
         super(Res1dLoader, self).__init__()
 
         self.dataset_groups = {}
-
+        # writing debug info to the file
+        self.Debug = False
+        self.DebugDir = 'c:/Temp1/'
         self.success = False
         self.stop = False
         self.keep_time_step = 1
@@ -144,7 +146,8 @@ class Res1dLoader(QObject):
         self.dataset_on_edge_if_on_vertex = False
 
     def create_mesh(self):
-
+        if self.Debug:
+         debugFile =open(self.DebugDir + "create_mesh.txt","w")
         self.dataset_groups = {}
         self.reaches = []
         self.vertices = []
@@ -170,23 +173,29 @@ class Res1dLoader(QObject):
             data_items = list(node.DataItems)
             for data_item in data_items:
                 if data_item.Quantity.Id not in self.node_quantities:
+                  if self.Debug:
                     self.node_quantities.append(data_item.Quantity.Id)
-
+        if self.Debug:
+         debugFile.write("nodes = %d \n" %len(self.vertices))
+        
         self.reaches = list(self.res_1D.data.Reaches)
         for reach in self.reaches:
+            if reach.IsStructureReach:
+             continue
             dhi_reach = DHIReach()
             data_items = list(reach.DataItems)
             dhi_reach.start_vertex = reach.StartNodeIndex
             dhi_reach.end_vertex = reach.EndNodeIndex
             grid_points = list(reach.GridPoints)
-
             start_chainage = grid_points[0].Chainage
-
             internal_chainage_vertices = []
 
             for i in range(0, len(data_items)):
                 data_item = data_items[i]
-
+                if data_item.ItemId is not None:
+                 if self.Debug:
+                  debugFile.write("structure")
+                 continue
                 if not data_item.Quantity.Id in self.reach_quantities:
                     self.reach_quantities.append(data_item.Quantity.Id)
                 chainages = reach.GetChainages(data_item)
@@ -286,11 +295,16 @@ class Res1dLoader(QObject):
 
             dhi_reach.data = reach
             self.dhi_reaches.append(dhi_reach)
+        if self.Debug:
+          debugFile.write("reaches = %d" %len(self.dhi_reaches))
+          debugFile.close()
 
     def load_dataset_group(self):
 
+        self.Debug = False
         dataset_groups = {}
-
+        if self.Debug:
+         debugFile=open(self.DebugDir + "/load_dataset_group.txt","w")
         if not self.stop:
             for quantity in self.res_1D.data.Quantities:
                 dataset_groups[quantity.Id] = quantity.Description
@@ -318,10 +332,11 @@ class Res1dLoader(QObject):
         vertex_dataset_groups = []
 
         for quantity in self.node_quantities:
-
             data = np.full([len(time_index_list), len(self.vertices)], delete_value)
-
+            
             self.taskChanged.emit('load ' + dataset_groups[quantity] + 'on vertices')
+            if self.Debug:
+             debugFile.write('Node quanitity ' + quantity + '\n')
             for i in range(0, len(self.main_nodes)):
                 self.update_progress(i, len(self.main_nodes), 100)
 
@@ -343,15 +358,14 @@ class Res1dLoader(QObject):
 
             self.taskChanged.emit('load ' + dataset_groups[quantity] + ' on vertices in reaches')
 
-            for reach_index in range(0, len(self.reaches)):
-                dhi_reach = self.dhi_reaches[reach_index]
-                
+            for reach_index in range(0, len(self.dhi_reaches)):
+                dhi_reach = self.dhi_reaches[reach_index]               
                 self.update_progress(reach_index, len(self.reaches), 100)
                 dhi_reach.vertex_values(data, quantity, time_index_list, delete_value)
-
-            vertex_dataset_groups.append(quantity)
+                
+            #vertex_dataset_groups.append(quantity)
             self.taskChanged.emit('Load dataset group on vertex:' + dataset_groups[quantity])
-            uri_string = 'vertex scalar ' + quantity + '\n'
+            uri_string = 'vertex scalar ' + quantity.replace(' ', '_') + '\n'
             uri_string = uri_string + '---'
             uri_string = uri_string + 'description: ' + dataset_groups[quantity] + '\n'
             uri_string = uri_string + 'reference_time: ' + str(start_time.date()) + \
@@ -380,14 +394,47 @@ class Res1dLoader(QObject):
 
             if not self.stop:
                 self.success = self.success and self.layer.addDatasets(uri_string)
-
+            if self.success:
+               if self.Debug:
+                debugFile.write('Succes node ' + quantity + '\n')
+               vertex_dataset_groups.append(quantity)
+            else:
+                if self.Debug:
+                 debugFile.write('Not Succes node ' + quantity + '\n')
+        self.success = True
+        
         # dataset group on edges
+         
         for quantity in self.reach_quantities:
+            
             has_data = False
-
-            if quantity in self.node_quantities and not self.dataset_on_edge_if_on_vertex:
-                continue
-
+            useQuantity = True
+            if quantity in vertex_dataset_groups and not self.dataset_on_edge_if_on_vertex:
+              continue
+            
+            for reach in self.reaches:
+             data_items = list(reach.DataItems)             
+             for data_item in data_items:
+              if data_item.Quantity.Id != quantity:
+               continue
+              if self.Debug:
+               debugFile.write('DataItem = ' + data_item.Quantity.Id + '   ') 
+              indexSize = len(data_item.IndexList)
+              if self.Debug:
+               debugFile.write('IndexSize = ' + str(indexSize) + '   ')
+              if (indexSize > 1):
+               if self.Debug:
+                debugFile.write('Indexes  0 = ' + str(data_item.IndexList[0]) + ' 1 = ' + str(data_item.IndexList[1]) + '\n')           
+               if data_item.IndexList[0] == 0 and data_item.IndexList[1] == 1:
+                if (indexSize > 3):
+                 for i in range(1, indexSize): 
+                  if (data_item.IndexList[i] - data_item.IndexList[i - 1]) > 1:
+                   useQuantity = False
+                   continue
+            if useQuantity == False:
+             continue
+            if self.Debug:
+             debugFile.write('Used reach quantity = ' + quantity + '\n')    
             data = np.full([len(time_index_list), self.edge_count], delete_value)
 
             self.taskChanged.emit('Load dataset group on edges:' + dataset_groups[quantity])
@@ -401,7 +448,9 @@ class Res1dLoader(QObject):
                         data[:, edge.qgis_index] = to_numpy(values)[time_index_list]
 
             if has_data:
-                uri_string = 'edge scalar ' + quantity + '\n'
+                if self.Debug:
+                 debugFile.write('Has data = ' + quantity + '\n') 
+                uri_string = 'edge scalar ' + quantity.replace(' ', '_') + '\n'
                 uri_string = uri_string + '---'
                 uri_string = uri_string + 'description: ' + dataset_groups[quantity] + '\n'
                 uri_string = uri_string + 'reference_time: ' + str(start_time.date()) + \
@@ -427,11 +476,23 @@ class Res1dLoader(QObject):
 
                 uri_string = uri_string + ''.join(time_step_string)
 
-                if not self.stop:
-                    self.success = self.success and self.layer.addDatasets(uri_string)
-
+                # if not self.stop:
+                    # self.success = self.success and self.layer.addDatasets(uri_string)
+                # if self.success:
+                   # debugFile.write('Succes reach ' + quantity + '\n')
+                # else:
+                   # debugFile.write('Not Succes reach ' + quantity + '\n')
+                isOk = self.layer.addDatasets(uri_string)
+                if isOk:
+                 if self.Debug:
+                  debugFile.write('Succes reach ' + quantity + '\n')
+                else:
+                 if self.Debug:
+                  debugFile.write('Not Succes reach ' + quantity + '\n')
             if self.stop:
                 break
+        if self.Debug:
+         debugFile.close()
 
     def load(self):
 
